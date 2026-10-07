@@ -11,6 +11,7 @@
     Content-Type: audio/wav          (16 kHz, 16-bit, mono PCM WAV)
     X-Device-Id: sticks3-1
   → 200 audio/wav (16 kHz mono) + 헤더 X-Transcript / X-Answer (URL 인코딩, LCD 표시용)
+    + X-Oakle-Emotion: joy        (대답 표정. 오클 사무실 docs/emotion.md 의 20종 이름 중 하나, 모르면 ok)
     + X-Timing: "stt=…;llm=…;tts=…" (ms). 기기가 자기 쪽 시각과 합쳐 단계별 지연을 한 줄로 남긴다.
   → 401 토큰 불일치 / 413 너무 김 / 429 하루 한도 / 502 하위 단계 실패 (본문 = 단계 이름)
   GET /healthz → 200 "ok"
@@ -167,10 +168,55 @@ def stt_openai_compatible(wav_path):
 
 # ---------------------------------------------------------------- 단계: LLM
 
+# ---------------------------------------------------------------- 대답 표정
+# 오클 사무실 docs/emotion.md 의 표정 20종(번호_이름 중 이름). 이 밖의 값은 기본값으로.
+EMOTIONS = ("joy", "sad", "angry", "love", "surprised", "shy", "gloomy", "lol", "ok", "no",
+            "thanks", "sorry", "congrats", "fighting", "hello", "eat", "sleepy", "curious", "yes", "mindblown")
+DEFAULT_EMOTION = "ok"
+EMO_TAG = re.compile(r"\[\s*(?:emo|emotion|표정)\s*[:=]\s*([A-Za-z_]+)\s*\]", re.I)
+# 표지가 없을 때의 간단 규칙: 위에서부터 처음 맞는 것
+EMO_RULES = [
+    ("sorry", r"죄송|미안"),
+    ("thanks", r"고마워|고맙|감사"),
+    ("congrats", r"축하"),
+    ("hello", r"안녕|반가워|좋은 아침"),
+    ("sleepy", r"잘 자|주무세요|졸려|피곤"),
+    ("eat", r"식사|밥|점심|저녁 드|맛있"),
+    ("fighting", r"화이팅|파이팅|힘내|응원"),
+    ("surprised", r"실패|오류|에러|문제가 생|안 돼요|못 했"),
+    ("no", r"아니요|아뇨|없어요|않아요"),
+    ("curious", r"모르겠|확인해 볼게|글쎄|\?$"),
+    ("lol", r"ㅋㅋ|하하|웃기"),
+    ("love", r"사랑|좋아해"),
+    ("yes", r"^(네|넵|예|알겠|그럴게|시작했)"),
+    ("joy", r"좋아요|좋네요|다행|잘 됐|잘됐|완료|끝났"),
+]
+
+
+def pick_emotion(answer):
+    """오클 답에서 표정 이름과 표지를 뗀 답을 돌려준다. 표지 → 규칙 → 기본값."""
+    tag = None
+    m = EMO_TAG.search(answer)
+    if m:
+        tag = m.group(1).lower()
+        answer = (answer[:m.start()] + answer[m.end():]).strip()
+    if tag in EMOTIONS:
+        return tag, answer
+    for name, pat in EMO_RULES:
+        if re.search(pat, answer.strip()):
+            return name, answer
+    return DEFAULT_EMOTION, answer
+
+
+EMO_ASK = (
+    "답 맨 앞에 지금 기분에 맞는 표정 표지 하나를 [표정:이름] 꼴로 붙이세요. 이름은 "
+    + "·".join(EMOTIONS) + " 중 하나. 표지는 읽히지 않고 기기 화면 얼굴로만 쓰입니다."
+)
+
 VOICE_PREFIX = (
     "[음성 리모컨에서 온 질문입니다. 답은 스피커로 읽힙니다. "
     "마크다운·표·코드·링크 없이 한국어 두세 문장으로 답하세요. "
-    "오래 걸리는 일이면 시작했다고만 짧게 말하세요.]\n"
+    "오래 걸리는 일이면 시작했다고만 짧게 말하세요. " + EMO_ASK + "]\n"
 )
 
 
@@ -214,7 +260,7 @@ def llm_claude_haiku(text, device_id):
     body = {
         "model": os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5"),
         "max_tokens": int(os.environ.get("CLAUDE_MAX_TOKENS", "200")),
-        "system": "당신은 손바닥만 한 음성 기기의 비서입니다. 한국어 한두 문장, 마크다운 없이 답하세요.",
+        "system": "당신은 손바닥만 한 음성 기기의 비서입니다. 한국어 한두 문장, 마크다운 없이 답하세요. " + EMO_ASK,
         "messages": [{"role": "user", "content": text}],
     }
     req = urllib.request.Request(
@@ -337,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(204)
                 stage = "llm"
                 t0 = time.monotonic(); answer = P["llm"](text, device_id); t["llm_ms"] = int((time.monotonic() - t0) * 1000)
+                emotion, answer = pick_emotion(answer)
                 spoken = to_speakable(answer) or "답이 비어 있어요."
                 stage = "tts"
                 t0 = time.monotonic(); P["tts"](spoken, wav_out); t["tts_ms"] = int((time.monotonic() - t0) * 1000)
@@ -351,7 +398,8 @@ class Handler(BaseHTTPRequestHandler):
             log(f"Q={text!r} A={spoken!r}")
         q = lambda s: urllib.parse.quote(s[:120])
         timing = ";".join(f"{k[:-3]}={t[k]}" for k in ("stt_ms", "llm_ms", "tts_ms") if k in t)
-        self._send(200, out, "audio/wav", {"X-Transcript": q(text), "X-Answer": q(spoken), "X-Timing": timing})
+        self._send(200, out, "audio/wav",
+                   {"X-Transcript": q(text), "X-Answer": q(spoken), "X-Timing": timing, "X-Oakle-Emotion": emotion})
 
 
 def add_device(device_id):

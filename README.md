@@ -14,6 +14,7 @@
 | **v1 집 안 「오클 음성 리모컨」** | 버튼을 누르고 말하면 맥미니가 받아 적고(whisper.cpp), **OpenClaw main(오클)** 에 넘긴 뒤 답을 `say -v Yuna`로 읽어 기기 스피커로 돌려준다 | [docs/v1-home-design.md](docs/v1-home-design.md) |
 | **v2 바깥 「범용 짧은 질의」** | 휴대폰 핫스팟에서 HTTPS로 오라클 VPS 중계 서버에 보내면 Groq STT → Claude Haiku 4.5 → Google TTS를 거쳐 답한다. 기기에는 중계 서버 토큰만 있다 | [docs/v2-outdoor-design.md](docs/v2-outdoor-design.md) |
 | 하드웨어 | 핀맵. 앰프와 LCD·오디오 전원은 **PMIC(M5PM1) 경유**다 | [docs/sticks3-hardware.md](docs/sticks3-hardware.md) |
+| 표정 | 화면 왼쪽 120×120 에 오클 표정(대기·듣는 중·생각 중·대답·오류·졸림). 대답 표정은 서버가 `X-Oakle-Emotion` 으로 준다. 그림은 리포에 없고 없으면 도형 얼굴 | [firmware/oakle_voice/faces/README.md](firmware/oakle_voice/faces/README.md) |
 | Muse SDK 대조 | Meta Muse Gadget SDK 는 참고·벤치마크만 한다(코드 이식 안 함). 하드웨어 정정, 배운 설계, 펌웨어 방향, 벤치마크 계획 | [docs/muse-sdk-benchmark.md](docs/muse-sdk-benchmark.md) |
 
 ## 구성도

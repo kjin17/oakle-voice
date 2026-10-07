@@ -84,7 +84,7 @@ B는 호출어와 HA 대시보드 연동이 꼭 필요해질 때를 위한 대�
    │        └→ OpenClaw main(오클) 에이전트 턴: 기억·도구·HA MCP 그대로
    ├─ 말하기용 정리: 마크다운·링크·코드 제거, 400자 상한
    └─ TTS: say -v Yuna → afconvert 16kHz mono WAV
-   │  200 audio/wav (+ X-Transcript, X-Answer 헤더 → LCD)
+   │  200 audio/wav (+ X-Transcript, X-Answer, X-Oakle-Emotion 헤더 → LCD)
    ▼
 [StickS3]  스피커 재생 → READY
 (Pi 3B / HA: 경로에 없음. 집 기기 제어가 필요하면 오클이 이미 가진 HA MCP로 한다)

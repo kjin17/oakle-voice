@@ -13,6 +13,10 @@
 //   (+값은 버튼을 뗀 순간 기준)
 //
 // 설정: config.h.example 을 config.h 로 복사해 채운다 (config.h 는 git 제외).
+//
+// 표정: 화면 왼쪽 120×120 에 오클 표정, 오른쪽에 글자. 그림 데이터 faces/faces_data.h 는 리포에 없다
+//       (tools/make_face_assets.py 로 만든다, faces/README.md). 없으면 도형 얼굴로 대신 그린다.
+//       표정 이름은 오클 사무실 docs/emotion.md 의 20종(joy … mindblown)과 같다.
 
 #include <M5Unified.h>
 #include <WiFi.h>
@@ -20,6 +24,12 @@
 #include <WiFiClientSecure.h>
 #include "esp_sleep.h"
 #include "config.h"   // WIFI_SSID, WIFI_PASS, SERVER_URL, DEVICE_ID, DEVICE_TOKEN, (USE_TLS, ROOT_CA)
+#if __has_include("faces/faces_data.h")
+#include "faces/faces_data.h"  // FACE_TABLE[FACE_COUNT] = {이름, RGB565 120×120}
+#define HAVE_FACES 1
+#else
+#define HAVE_FACES 0
+#endif
 
 // ---- 조절값 (config.h 에서 덮어쓸 수 있다) ----
 #ifndef MAX_SEC
@@ -76,34 +86,115 @@ static bool on_usb() {
   return (b[0] | (b[1] << 8)) > 4000;
 }
 
-// ---- 화면 ----
+// ---- 화면: 왼쪽 표정(FACE_X..+120), 오른쪽 글자(TX..240) ----
+static const int FACE_X = 0, FACE_Y = 8, FACE_S = 120;
+static const int TX = 124, TW = 240 - TX - 2;
+
+// 상태별 표정. 이름은 사무실 docs/emotion.md 와 같다. 대답 표정은 서버가 X-Oakle-Emotion 으로 준다
+#define FACE_BOOT   "hello"      // 켜짐·Wi-Fi 잡는 중
+#define FACE_IDLE   "joy"        // 대기
+#define FACE_LISTEN "yes"        // 듣는 중 (경례)
+#define FACE_THINK  "curious"    // 보내고 기다리는 중
+#define FACE_SPEAK  "ok"         // 대답 표정이 없거나 모르는 이름일 때
+#define FACE_ERROR  "surprised"  // 서버·메모리 오류
+#define FACE_NOWIFI "mindblown"  // 연결 없음
+#define FACE_HUH    "curious"    // 너무 짧음·말소리 없음
+#define FACE_SLEEPY "sleepy"     // 오래 쉼(화면 어둡게)
+
+#if !HAVE_FACES
+// 도형 얼굴: 표정 그림이 없을 때(공개 리포 그대로 빌드) 대신 그린다
+static void shape_face(const char* f) {
+  auto& d = M5.Display;
+  const int cx = FACE_X + FACE_S / 2, cy = FACE_Y + FACE_S / 2 + 6, r = 44;
+  d.fillRect(FACE_X, FACE_Y, FACE_S, FACE_S, TFT_BLACK);
+  d.drawLine(cx, cy - r, cx, cy - r - 10, TFT_LIGHTGREY);                // 안테나
+  d.fillCircle(cx, cy - r - 13, 4, TFT_ORANGE);
+  d.fillCircle(cx, cy, r, 0xE71C);                                       // 헬멧(밝은 회색)
+  d.fillCircle(cx, cy + 4, r - 10, 0xFF9B);                              // 얼굴(살구색)
+  const int ex = 15, ey = cy - 2, my = cy + 18;
+  auto is = [&](const char* n) { return strcmp(f, n) == 0; };
+  if (is("sleepy") || is("joy") || is("lol") || is("thanks")) {          // 감은 눈 / 웃는 눈
+    d.drawArc(cx - ex, ey + (is("sleepy") ? -3 : 3), 5, 4, is("sleepy") ? 20 : 200, is("sleepy") ? 160 : 340, TFT_BLACK);
+    d.drawArc(cx + ex, ey + (is("sleepy") ? -3 : 3), 5, 4, is("sleepy") ? 20 : 200, is("sleepy") ? 160 : 340, TFT_BLACK);
+  } else if (is("mindblown") || is("no")) {                              // X 눈
+    for (int s : {-1, 1}) {
+      d.drawLine(cx + s * ex - 4, ey - 4, cx + s * ex + 4, ey + 4, TFT_BLACK);
+      d.drawLine(cx + s * ex - 4, ey + 4, cx + s * ex + 4, ey - 4, TFT_BLACK);
+    }
+  } else {
+    int er = is("surprised") ? 6 : 4;
+    d.fillCircle(cx - ex, ey, er, TFT_BLACK);
+    d.fillCircle(cx + ex, ey, er, TFT_BLACK);
+  }
+  if (is("surprised") || is("curious") || is("yes")) d.fillCircle(cx, my, is("surprised") ? 6 : 3, TFT_BLACK);   // 동그란 입
+  else if (is("sad") || is("gloomy") || is("sorry") || is("angry") || is("mindblown") || is("no"))
+    d.drawArc(cx, my + 10, 9, 8, 220, 320, TFT_BLACK);                    // 처진 입
+  else if (is("sleepy")) d.drawLine(cx - 4, my, cx + 4, my, TFT_BLACK);
+  else d.drawArc(cx, my - 6, 10, 9, 30, 150, TFT_BLACK);                   // 웃는 입
+  if (is("shy") || is("love") || is("joy")) {                             // 볼
+    d.fillCircle(cx - 26, cy + 10, 5, 0xFB2C);
+    d.fillCircle(cx + 26, cy + 10, 5, 0xFB2C);
+  }
+}
+#endif
+
+static void draw_face(const char* f) {
+#if HAVE_FACES
+  for (size_t i = 0; i < FACE_COUNT; i++)
+    if (strcmp(FACE_TABLE[i].name, f) == 0) {
+      M5.Display.pushImage(FACE_X, FACE_Y, FACE_W, FACE_H, FACE_TABLE[i].px);
+      return;
+    }
+  for (size_t i = 0; i < FACE_COUNT; i++)                                // 모르는 이름이면 OK 얼굴
+    if (strcmp(FACE_TABLE[i].name, FACE_SPEAK) == 0) { M5.Display.pushImage(FACE_X, FACE_Y, FACE_W, FACE_H, FACE_TABLE[i].px); return; }
+#else
+  shape_face(f);
+#endif
+}
+
 static void touch() {
   last_touch = millis();
   if (dimmed) { M5.Display.setBrightness(128); dimmed = false; }
 }
 
-static void status(const char* s, uint16_t color = TFT_WHITE) {
+static void status(const char* s, uint16_t color = TFT_WHITE, const char* face = FACE_IDLE) {
   touch();
   M5.Display.fillScreen(TFT_BLACK);
+  draw_face(face);
   M5.Display.setFont(&fonts::Font0);
   M5.Display.setTextColor(color);
-  M5.Display.setTextSize(3);
-  M5.Display.setCursor(8, 8);
+  M5.Display.setTextSize(2);
+  M5.Display.setCursor(TX, 6);
   M5.Display.print(s);
   M5.Display.setTextSize(1);
-  M5.Display.setCursor(8, 125);
-  M5.Display.printf("%d%%  %s", M5.Power.getBatteryLevel(), WiFi.isConnected() ? "wifi" : "no wifi");
+  M5.Display.setCursor(TX, 125);
+  M5.Display.printf("%d%% %s", M5.Power.getBatteryLevel(), WiFi.isConnected() ? "wifi" : "no wifi");
 }
 
-// 한글 한 줄 영역. efontKR 은 M5GFX(LovyanGFX)에 들어 있는 한글 글꼴이다 [추론: 실기에서 글꼴 이름 확인 필요]
-static void caption(int y, const String& s, uint16_t color) {
-  M5.Display.setFont(&fonts::efontKR_12);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(color, TFT_BLACK);
-  M5.Display.setTextWrap(true);
-  M5.Display.setCursor(4, y);
-  M5.Display.print(s);
-  M5.Display.setFont(&fonts::Font0);
+// 오른쪽 칸에 한글을 글자 단위로 줄바꿈해 찍는다(라이브러리 줄바꿈은 화면 왼쪽 끝으로 돌아간다 [추론]).
+// efontKR 은 M5GFX(LovyanGFX)에 들어 있는 한글 글꼴이다 [추론: 실기에서 글꼴 이름 확인 필요]. 넘치는 줄은 버린다.
+static int caption(int y, const String& s, uint16_t color, int max_y = 120) {
+  auto& d = M5.Display;
+  d.setFont(&fonts::efontKR_12);
+  d.setTextSize(1);
+  d.setTextColor(color, TFT_BLACK);
+  d.setTextWrap(false);
+  const int lh = d.fontHeight() + 1;
+  int x = TX;
+  for (size_t i = 0; i < s.length() && y + lh <= max_y;) {
+    uint8_t c = s[i];
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4;   // UTF-8 한 글자
+    String ch = s.substring(i, i + n);
+    i += n;
+    if (ch == "\n") { x = TX; y += lh; continue; }
+    int w = d.textWidth(ch);
+    if (x + w > TX + TW) { x = TX; y += lh; if (y + lh > max_y) break; if (ch == " ") continue; }
+    d.setCursor(x, y);
+    d.print(ch);
+    x += w;
+  }
+  d.setFont(&fonts::Font0);
+  return y + lh;
 }
 
 static String url_decode(const String& in) {
@@ -121,9 +212,9 @@ static String url_decode(const String& in) {
 static void level_bar(const int16_t* p, size_t n) {
   int peak = 0;
   for (size_t i = 0; i < n; i++) { int v = abs(p[i]); if (v > peak) peak = v; }
-  int w = (int)(228L * peak / 32768);
-  M5.Display.fillRect(6, 100, 228, 10, TFT_DARKGREY);
-  M5.Display.fillRect(6, 100, w, 10, peak > 30000 ? TFT_RED : TFT_GREEN);   // 빨강 = 잘림
+  int w = (int)((long)TW * peak / 32768);
+  M5.Display.fillRect(TX, 100, TW, 10, TFT_DARKGREY);
+  M5.Display.fillRect(TX, 100, w, 10, peak > 30000 ? TFT_RED : TFT_GREEN);   // 빨강 = 잘림
 }
 
 // ---- WAV ----
@@ -149,7 +240,7 @@ static void record_while_held() {
   M5.In_I2C.writeRegister8(0x18, 0x14, 0x10 | (MIC_PGA_DB / 3), 100000);
   M5.In_I2C.writeRegister8(0x18, 0x17, 0xBF, 100000);
 #endif
-  status("LISTEN", TFT_GREEN);
+  status("LISTEN", TFT_GREEN, FACE_LISTEN);
   const size_t max_samples = RATE * MAX_SEC;
   while (M5.BtnA.isPressed() && pcm_len + CHUNK <= max_samples) {
     if (M5.Mic.record(pcm + pcm_len, CHUNK, RATE)) {
@@ -167,12 +258,12 @@ static void record_while_held() {
 
 // ---- 질의와 재생. 재생 중 A 를 다시 누르면 true (바로 새 녹음) ----
 static bool ask_and_play() {
-  if (t_release - t_press < MIN_HOLD_MS || pcm_len < RATE / 4) { status("short"); return false; }
-  if (!WiFi.isConnected()) { status("NOWIFI", TFT_RED); return false; }
-  status("SEND", TFT_YELLOW);
+  if (t_release - t_press < MIN_HOLD_MS || pcm_len < RATE / 4) { status("short", TFT_WHITE, FACE_HUH); return false; }
+  if (!WiFi.isConnected()) { status("NOWIFI", TFT_RED, FACE_NOWIFI); return false; }
+  status("SEND", TFT_YELLOW, FACE_THINK);
   uint32_t data_bytes = pcm_len * 2;
   uint8_t* body = (uint8_t*)ps_malloc(44 + data_bytes);
-  if (!body) { status("NOMEM", TFT_RED); return false; }
+  if (!body) { status("NOMEM", TFT_RED, FACE_ERROR); return false; }
   wav_header(body, data_bytes);
   memcpy(body + 44, pcm, data_bytes);
 
@@ -188,29 +279,32 @@ static bool ask_and_play() {
   http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
   http.addHeader("X-Device-Id", DEVICE_ID);
   http.addHeader("Content-Type", "audio/wav");
-  const char* want[] = {"X-Transcript", "X-Answer", "X-Timing"};
-  http.collectHeaders(want, 3);
+  const char* want[] = {"X-Transcript", "X-Answer", "X-Timing", "X-Oakle-Emotion"};
+  http.collectHeaders(want, 4);
   uint32_t t_post = millis();
-  status("THINK", TFT_YELLOW);
+  status("THINK", TFT_YELLOW, FACE_THINK);
   int code = http.POST(body, 44 + data_bytes);   // 서버가 STT·LLM·TTS 를 다 끝내야 돌아온다
   uint32_t t_hdr = millis();
   free(body);
 
-  if (code == 204) { status("no speech"); http.end(); return false; }
+  if (code == 204) { status("no speech", TFT_WHITE, FACE_HUH); http.end(); return false; }
   if (code != 200) {
     char msg[24]; snprintf(msg, sizeof msg, "ERR %d", code);
-    status(msg, TFT_RED);                          // 502 본문 = 실패 단계(stt/llm/tts), 음수 = 연결 실패
-    M5.Display.setCursor(8, 60); M5.Display.print(code < 0 ? http.errorToString(code) : http.getString().substring(0, 20));
+    status(msg, TFT_RED, code < 0 ? FACE_NOWIFI : FACE_ERROR);   // 502 본문 = 실패 단계(stt/llm/tts), 음수 = 연결 실패
+    M5.Display.setCursor(TX, 40); M5.Display.print(code < 0 ? http.errorToString(code) : http.getString().substring(0, 20));
     Serial.printf("ask failed: code=%d after %lu ms\n", code, (unsigned long)(t_hdr - t_release));
     http.end(); return false;
   }
   String heard = url_decode(http.header("X-Transcript"));
   String answer = url_decode(http.header("X-Answer"));
   String srv = http.header("X-Timing");
+  String emo = http.header("X-Oakle-Emotion");     // 사무실 표정 이름(joy …). 비었거나 모르는 이름이면 OK 얼굴
+  emo.trim();
+  if (emo.length() == 0) emo = FACE_SPEAK;
   int len = http.getSize();
-  if (len <= 44 || len > 2 * 1024 * 1024) { status("BADLEN", TFT_RED); http.end(); return false; }
+  if (len <= 44 || len > 2 * 1024 * 1024) { status("BADLEN", TFT_RED, FACE_ERROR); http.end(); return false; }
   uint8_t* wav = (uint8_t*)ps_malloc(len);
-  if (!wav) { status("NOMEM", TFT_RED); http.end(); return false; }
+  if (!wav) { status("NOMEM", TFT_RED, FACE_ERROR); http.end(); return false; }
   WiFiClient* s = http.getStreamPtr();
   int got = 0; uint32_t t0 = millis();
   while (got < len && millis() - t0 < 30000) {
@@ -220,9 +314,9 @@ static bool ask_and_play() {
   uint32_t t_body = millis();
   http.end();
 
-  status("SPEAK", TFT_CYAN);
-  caption(36, heard.substring(0, 60), TFT_DARKGREY);    // 무엇으로 알아들었는지 먼저 보인다
-  caption(60, answer, TFT_WHITE);
+  status("SPEAK", TFT_CYAN, emo.c_str());
+  int y = caption(26, heard.substring(0, 60), TFT_DARKGREY, 52);   // 무엇으로 알아들었는지 먼저(두 줄까지)
+  caption(y + 2, answer, TFT_WHITE);
   M5.Speaker.begin();
   M5.Speaker.setVolume(180);
   M5.Speaker.playWav(wav, got);
@@ -273,12 +367,13 @@ void setup() {
   pmic_bit(PM1_PWR_CFG, 0x10, false);
 #endif
   pcm = (int16_t*)ps_malloc(RATE * MAX_SEC * 2);
-  status("WIFI..");
+  status("WIFI..", TFT_WHITE, FACE_BOOT);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   for (int i = 0; i < 60 && !WiFi.isConnected(); i++) delay(250);
-  status(WiFi.isConnected() ? "READY" : "NOWIFI");
+  if (WiFi.isConnected()) status("READY");
+  else status("NOWIFI", TFT_RED, FACE_NOWIFI);
 }
 
 void loop() {
@@ -290,7 +385,10 @@ void loop() {
   }
   if (M5.BtnB.wasClicked()) status("READY");       // TODO: 볼륨/프로필 전환
   uint32_t idle = millis() - last_touch;
-  if (!dimmed && idle > DIM_AFTER_S * 1000UL) { M5.Display.setBrightness(16); dimmed = true; }
+  if (!dimmed && idle > DIM_AFTER_S * 1000UL) {   // 오래 쉼: 졸린 얼굴로 바꾸고 어둡게
+    draw_face(FACE_SLEEPY);
+    M5.Display.setBrightness(16); dimmed = true;
+  }
   if (SLEEP_AFTER_S && idle > SLEEP_AFTER_S * 1000UL && !on_usb()) deep_sleep();
   delay(10);
 }
