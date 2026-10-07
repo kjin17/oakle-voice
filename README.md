@@ -43,7 +43,7 @@ v2 (인터넷, 핫스팟)
 
 ## 결정이 필요한 항목
 
-1. **v1 전송 방식**: A(커스텀 펌웨어 → 맥미니, 추천) / B(ESPHome → HA Assist) / C'(xiaozhi 펌웨어 + 자체 xiaozhi 서버에 OpenClaw를 LLM으로 연결) 중 하나.
+1. **v1 전송 방식**: ✅ 결정(2026-10-07) A, 커스텀 펌웨어(Arduino + M5Unified) → 맥미니 중계. B(ESPHome → HA Assist)는 대안 초안으로만 보관.
 2. **OpenClaw 설정 변경 승인**: `gateway.http.endpoints.chatCompletions.enabled: true`. 승인하지 않으면 느린 `openclaw agent` CLI 경로로 시험한다.
 3. **음성으로 들어온 질의의 권한**: 오클의 모든 도구 권한을 그대로 쓸지, 아니면 「음성 질의는 조회만, 바꾸는 일은 텔레그램에서 확인」 같은 규칙을 오클 지시문에 둘지. 집 안에서는 누가 버튼을 눌러도 같은 권한으로 실행된다.
 4. **v1 세션**: 기기 전용 세션(추천, 빠름) / 텔레그램 main 세션과 공유.
