@@ -1,0 +1,18 @@
+// config.h 로 복사해서 채운다. config.h 는 .gitignore 대상 — 실제 값은 이 예시 파일에 적지 말 것.
+#pragma once
+
+#define WIFI_SSID     "CHANGE_ME"
+#define WIFI_PASS     "CHANGE_ME"
+#define DEVICE_ID     "sticks3-1"
+#define DEVICE_TOKEN  "CHANGE_ME"   // server/voice_bridge.py add-device 가 한 번 출력하는 값
+
+// v1 집 안: 맥미니 LAN 주소, 평문 HTTP (LAN 전용)
+#define USE_TLS 0
+#define SERVER_URL "http://192.168.1.50:8765/v1/ask"
+
+// v2 바깥: VM 중계 서버, HTTPS 필수
+// #define USE_TLS 1
+// #define SERVER_URL "https://voice.example.com/v1/ask"
+// static const char ROOT_CA[] = R"(-----BEGIN CERTIFICATE-----
+// ... 인증서 체인의 루트 (Let's Encrypt 면 ISRG Root X1) ...
+// -----END CERTIFICATE-----)";

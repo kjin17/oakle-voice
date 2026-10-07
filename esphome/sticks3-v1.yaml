@@ -1,0 +1,239 @@
+# ============================================================
+# oakle-voice v1 — StickS3 ESPHome 초안 (경로 B: HA Assist 경유)
+#
+# ⚠️ 추천안은 경로 A(커스텀 펌웨어 → 맥미니 중계, HA 미경유)다. docs/v1-home-design.md 참고.
+#    이 파일은 「HA Assist 로 가기로 결정할 경우」를 위한 초안이다.
+# ⚠️ 컴파일·실기 검증 0회. 핀·PMIC·ADC 재무장은 커뮤니티 설정
+#    https://github.com/thenexthop2025/sticks3-voice (ESPHome 2026.9.x) 에서 옮겼다 [근거],
+#    버튼 눌러 말하기·화면 단순화는 새로 쓴 부분이다 [추론].
+# 비밀값은 !secret 참조만. 실제 값은 secrets.yaml (git 제외) — secrets.yaml.example 참고.
+# ============================================================
+
+substitutions:
+  name: oakle-sticks3-1
+  friendly_name: "오클 리모컨 1"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    # M5PM1(0x6E): G2=LCD 전원(L3B), G3=스피커 앰프(AW8737) 켜기.
+    # 앰프 enable 이 ESP GPIO 에 없으므로 이 블록이 없으면 소리가 안 난다.
+    - priority: 950
+      then:
+        - lambda: |-
+            esphome::i2c::I2CDevice pm;
+            pm.set_i2c_bus(id(internal_i2c));
+            pm.set_i2c_address(0x6E);
+            uint8_t r = 0;
+            pm.write_byte(0x09, 0x00);                         // I2C idle sleep 해제 (M5GFX 초기화와 동일)
+            if (pm.read_byte(0x16, &r)) pm.write_byte(0x16, r & 0x0F);    // G2,G3 = GPIO 기능
+            if (pm.read_byte(0x13, &r)) pm.write_byte(0x13, r & ~0x0C);   // push-pull
+            if (pm.read_byte(0x11, &r)) pm.write_byte(0x11, r | 0x0C);    // 출력 High
+            if (pm.read_byte(0x10, &r)) pm.write_byte(0x10, r | 0x0C);    // 출력 모드
+    - priority: -200
+      then:
+        - delay: 1s
+        - audio_dac.set_volume:
+            id: codec
+            volume: 70%
+
+esp32:
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: INFO
+
+# HA 와의 연결 (경로 B 는 HA 가 오디오를 중계한다)
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: light     # 배터리 250mAh. 응답 지연이 문제면 none 으로 [추론]
+  ap:
+    ssid: "oakle-sticks3 setup"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+# ------------------------------------------------------------ 버스
+i2c:
+  id: internal_i2c
+  sda: GPIO47
+  scl: GPIO48
+  frequency: 100kHz
+  scan: true
+
+spi:
+  id: lcd_spi
+  clk_pin: GPIO40
+  mosi_pin: GPIO39
+
+i2s_audio:
+  - id: audio_bus
+    i2s_mclk_pin: GPIO18
+    i2s_bclk_pin: GPIO17
+    i2s_lrclk_pin: GPIO15
+
+# ------------------------------------------------------------ 오디오
+audio_dac:
+  - platform: es8311
+    id: codec
+    i2c_id: internal_i2c
+    address: 0x18
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    use_mclk: true
+    use_microphone: false     # 아날로그 마이크는 아래 재무장 스크립트로 ADC 를 켠다 (커뮤니티 설정 그대로)
+    mic_gain: 42DB
+
+microphone:
+  - platform: i2s_audio
+    id: mic
+    i2s_audio_id: audio_bus
+    i2s_din_pin: GPIO16
+    adc_type: external
+    pdm: false
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    channel: left
+
+speaker:
+  - platform: i2s_audio
+    id: spk
+    i2s_audio_id: audio_bus
+    i2s_dout_pin: GPIO14
+    dac_type: external
+    audio_dac: codec
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    channel: mono
+    buffer_duration: 500ms
+
+script:
+  # I2S RX 클럭이 돈 뒤에 ES8311 ADC 를 다시 켠다 (커뮤니티 설정 arm_es8311_adc 축약)
+  - id: arm_adc
+    mode: restart
+    then:
+      - delay: 40ms
+      - lambda: |-
+          id(codec).write_byte(0x14, 0x1A);
+          id(codec).write_byte(0x0E, 0x02);
+          id(codec).write_byte(0x0D, 0x01);
+
+voice_assistant:
+  id: va
+  microphone:
+    microphone: mic
+    channels: 0
+    gain_factor: 2
+  speaker: spk
+  noise_suppression_level: 2
+  auto_gain: 20dBFS
+  on_listening:
+    - script.execute: arm_adc
+    - lambda: id(state_txt) = "LISTEN";
+  on_stt_end:
+    - lambda: id(state_txt) = "THINK";
+  on_tts_stream_start:
+    - lambda: id(state_txt) = "SPEAK";
+  on_end:
+    - lambda: id(state_txt) = "READY";
+  on_error:
+    - lambda: id(state_txt) = "ERR";
+  on_client_disconnected:
+    - lambda: id(state_txt) = "NO HA";
+
+# 호출어(선택) — 켜면 상시 녹음이라 배터리를 빨리 쓴다 [추론]. 한국어 「오클」 모델은 없다(직접 학습 필요) [추론].
+# micro_wake_word:
+#   microphone:
+#     microphone: mic
+#     channels: 0
+#     gain_factor: 2
+#   models:
+#     - model: okay_nabu
+#   on_wake_word_detected:
+#     - voice_assistant.start:
+#         wake_word: !lambda return wake_word;
+
+# ------------------------------------------------------------ 버튼: 누르는 동안 말하기
+binary_sensor:
+  - platform: gpio
+    id: key_a
+    pin:
+      number: GPIO11
+      inverted: true
+      mode: INPUT_PULLUP
+    on_press:
+      - voice_assistant.start:
+    on_release:
+      - voice_assistant.stop:
+  - platform: gpio
+    id: key_b
+    pin:
+      number: GPIO12
+      inverted: true
+      mode: INPUT_PULLUP
+    on_click:
+      - audio_dac.set_volume:
+          id: codec
+          volume: !lambda 'return id(codec).volume() >= 0.95f ? 0.4f : id(codec).volume() + 0.15f;'
+
+# ------------------------------------------------------------ 배터리 (M5PM1 0x22/0x23, mV)
+sensor:
+  - platform: template
+    id: vbat
+    name: "Battery Voltage"
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    update_interval: 60s
+    lambda: |-
+      esphome::i2c::I2CDevice pm;
+      pm.set_i2c_bus(id(internal_i2c));
+      pm.set_i2c_address(0x6E);
+      uint8_t lo = 0, hi = 0;
+      if (!pm.read_byte(0x22, &lo) || !pm.read_byte(0x23, &hi)) return NAN;
+      return ((hi & 0x0F) << 8 | lo) / 1000.0f;
+
+# ------------------------------------------------------------ 화면 (상태만, 한글 글리프 없음)
+globals:
+  - id: state_txt
+    type: std::string
+    initial_value: '"READY"'
+
+font:
+  - file: "gfonts://Roboto@700"
+    id: f_big
+    size: 28
+  - file: "gfonts://Roboto@500"
+    id: f_small
+    size: 14
+
+display:
+  - platform: st7789v
+    model: "TTGO TDisplay 135x240"   # 커뮤니티 설정이 이 프리셋으로 동작 (135x240, offset 52/40)
+    spi_id: lcd_spi
+    cs_pin: GPIO41
+    dc_pin: GPIO45
+    reset_pin: GPIO21
+    backlight_pin: GPIO38
+    rotation: 90
+    update_interval: 500ms
+    lambda: |-
+      it.fill(Color::BLACK);
+      it.print(120, 50, id(f_big), Color(255, 200, 0), TextAlign::CENTER, id(state_txt).c_str());
+      it.printf(120, 110, id(f_small), Color(160, 160, 160), TextAlign::CENTER, "%.2fV  hold A to talk", id(vbat).state);

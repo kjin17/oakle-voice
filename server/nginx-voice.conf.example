@@ -1,0 +1,25 @@
+# v2 중계 서버용 nginx 초안 (기존 VPS nginx 에 서브도메인 추가안). 적용 안 함 — 제안만.
+# 도메인·인증서 경로는 결정 후 채운다.
+
+limit_req_zone $binary_remote_addr zone=voice:1m rate=10r/m;
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name voice.example.com;                       # TODO 결정 항목
+
+    ssl_certificate     /etc/letsencrypt/live/voice.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/voice.example.com/privkey.pem;
+
+    client_max_body_size 1m;                             # 15초 WAV ≈ 480KB
+    access_log /var/log/nginx/voice.access.log;          # Authorization 헤더는 기본 포맷에 안 남는다
+
+    location = /v1/ask {
+        limit_req zone=voice burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8765;
+        proxy_read_timeout 60s;
+        proxy_request_buffering on;
+    }
+    location = /healthz { proxy_pass http://127.0.0.1:8765; }
+    location / { return 404; }
+}

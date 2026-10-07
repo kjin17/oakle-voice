@@ -1,0 +1,17 @@
+# 비밀값
+secrets.yaml
+esphome/secrets.yaml
+firmware/**/config.h
+*.env
+.env*
+!*.example
+
+# 빌드·상태
+.esphome/
+esphome/.esphome/
+build/
+.pio/
+__pycache__/
+*.sqlite3
+*.wav
+*.aiff
